@@ -1,0 +1,28 @@
+[package]
+name = "tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dev-dependencies]
+tfhe = { path = "../tfhe" }
+tfhe-versionable = { path = "../utils/tfhe-versionable" }
+tfhe-backward-compat-data = { path = "../utils/tfhe-backward-compat-data" }
+rand = { workspace = true }
+cargo_toml = "0.22"
+semver = "1.0"
+
+
+[[test]]
+name = "backward_compatibility_tests"
+path = "backward_compatibility_tests.rs"
+
+[[test]]
+name = "corrupted_inputs_deserialization"
+path = "corrupted_inputs_deserialization.rs"
+
+[features]
+shortint = ["tfhe/shortint"]
+integer = ["shortint", "tfhe/integer"]
+zk-pok = ["tfhe/zk-pok"]
+strings = ["integer", "tfhe/strings"]

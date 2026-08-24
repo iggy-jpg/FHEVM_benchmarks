@@ -1,0 +1,38 @@
+# Specifying a path without code owners means that path won't have owners and is akin to a negation
+# i.e. the `core_crypto` dir is owned and needs owner approval/review, but not the `gpu` sub dir
+# See https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners#example-of-a-codeowners-file
+
+/backends/tfhe-cuda-backend/            @zama-ai/gpu
+/backends/zk-cuda-backend/              @zama-ai/gpu
+/backends/tfhe-hpu-backend/             @zama-ai/hardware
+
+/tfhe/examples/hpu                      @zama-ai/hardware
+
+/tfhe/src/core_crypto/                  @IceTDrinker @mayeul-zama
+/tfhe/src/core_crypto/gpu               @zama-ai/gpu
+/tfhe/src/core_crypto/hpu               @zama-ai/hardware
+
+/tfhe/src/shortint/                     @mayeul-zama @nsarlin-zama
+
+/tfhe/src/integer/                      @tmontaigu @nsarlin-zama
+/tfhe/src/integer/gpu                   @zama-ai/gpu
+/tfhe/src/integer/hpu                   @zama-ai/hardware
+
+/tfhe/src/high_level_api/               @tmontaigu @nsarlin-zama
+
+/tfhe-zk-pok/                           @nsarlin-zama @tmontaigu
+/tfhe-zk-pok/src/gpu                    @zama-ai/gpu
+
+/tfhe-benchmark/                        @soonum @SouchonTheo
+
+/utils/                                 @nsarlin-zama @SouchonTheo
+
+/Makefile                               @IceTDrinker @soonum
+
+/mockups/tfhe-hpu-mockup                @zama-ai/hardware
+
+/.github/                               @soonum @SouchonTheo
+/ci/                                    @soonum @SouchonTheo
+/scripts/                               @soonum @SouchonTheo
+
+/CODEOWNERS                             @IceTDrinker @nsarlin-zama

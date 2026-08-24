@@ -1,0 +1,943 @@
+#include "ZKProof.h"
+#include "HomPKE.h"
+#include <blst.h>
+#include <openssl/evp.h>
+#include <cstring>
+#include <random>
+#include <stdexcept>
+#include <iostream>
+#include <algorithm>
+#include <fstream>
+#include <omp.h>
+
+namespace ZKProof {
+
+// ============================================================================
+
+// ============================================================================
+
+static void shake256_hash(
+    const uint8_t* input,
+    size_t input_len,
+    uint8_t* output,
+    size_t output_len
+) {
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    if (!ctx) throw std::runtime_error("Failed to create EVP context");
+    EVP_DigestInit_ex(ctx, EVP_shake256(), nullptr);
+    EVP_DigestUpdate(ctx, input, input_len);
+    EVP_DigestFinalXOF(ctx, output, output_len);
+    EVP_MD_CTX_free(ctx);
+}
+
+static __uint128_t decode_q(uint64_t q) {
+    return (q == 0) ? ((__uint128_t)1 << 64) : (__uint128_t)q;
+}
+
+static std::vector<int64_t> compute_r1(
+    const std::vector<int64_t>& e1,
+    const std::vector<int64_t>& c1,
+    const std::vector<int64_t>& a,
+    const std::vector<int64_t>& r,
+    size_t d,
+    __uint128_t decoded_q
+) {
+    std::vector<int64_t> r1(d, 0);
+    for (size_t i = 0; i < d; i++) {
+        r1[i] = e1[i] - c1[i];
+    }
+    for (size_t i = 0; i < d; i++) {
+        for (size_t j = 0; j < d; j++) {
+            size_t idx = i + j;
+            if (idx < d) {
+                r1[idx] += a[i] * r[d - j - 1];
+            } else {
+                r1[idx - d] -= a[i] * r[d - j - 1];
+            }
+        }
+    }
+    for (size_t i = 0; i < d; i++) {
+        __int128_t val = r1[i];
+        r1[i] = static_cast<int64_t>(val / (__int128_t)decoded_q);
+    }
+    return r1;
+}
+
+static std::vector<int64_t> compute_r2(
+    const std::vector<int64_t>& e2,
+    const std::vector<int64_t>& c2,
+    const std::vector<int64_t>& m,
+    const std::vector<int64_t>& b,
+    const std::vector<int64_t>& r,
+    size_t d,
+    uint64_t delta,
+    __uint128_t decoded_q
+) {
+
+    std::vector<int64_t> r2(d, 0);
+    for (size_t idx = 0; idx < d; idx++) {
+        __int128_t val = (__int128_t)delta * m[idx] + e2[idx] - c2[idx];
+        for (size_t j = 0; j < d; j++) {
+            val += (__int128_t)r[d - j - 1] * b[j];
+        }
+        r2[idx] = static_cast<int64_t>(val / (__int128_t)decoded_q);
+    }
+    return r2;
+}
+
+static std::vector<uint8_t> signed_binary_decompose(int64_t value, size_t bits) {
+    std::vector<uint8_t> result(bits);
+    uint64_t uval = static_cast<uint64_t>(value);
+    for (size_t i = 0; i < bits; i++) {
+        result[i] = (uval >> i) & 1;
+    }
+    return result;
+}
+
+static std::vector<uint8_t> construct_witness(
+    const std::vector<int64_t>& r,
+    const std::vector<int64_t>& m,
+    const std::vector<int64_t>& e1,
+    const std::vector<int64_t>& e2,
+    const std::vector<int64_t>& r1,
+    const std::vector<int64_t>& r2,
+    size_t d, uint64_t b, uint64_t b_r, uint64_t t,
+    uint64_t msbs_zero_padding
+) {
+    std::vector<uint8_t> witness;
+    uint64_t effective_t = t >> msbs_zero_padding;
+    size_t log_t = effective_t > 1 ? (64 - __builtin_clzll(effective_t - 1)) : 1;
+    size_t log_b = b > 0 ? (64 - __builtin_clzll(b)) + 1 : 1;
+    size_t log_br = b_r > 0 ? (64 - __builtin_clzll(b_r)) + 1 : 1;
+
+
+    for (size_t i = 0; i < d; i++) {
+        witness.push_back(r[i] & 1);
+    }
+
+    for (size_t i = 0; i < d; i++) {
+        auto bits = signed_binary_decompose(m[i], log_t);
+        witness.insert(witness.end(), bits.begin(), bits.end());
+    }
+
+    for (size_t i = 0; i < d; i++) {
+        auto bits = signed_binary_decompose(e1[i], log_b);
+        witness.insert(witness.end(), bits.begin(), bits.end());
+    }
+
+    for (size_t i = 0; i < d; i++) {
+        auto bits = signed_binary_decompose(e2[i], log_b);
+        witness.insert(witness.end(), bits.begin(), bits.end());
+    }
+
+    for (size_t i = 0; i < d; i++) {
+        auto bits = signed_binary_decompose(r1[i], log_br);
+        witness.insert(witness.end(), bits.begin(), bits.end());
+    }
+
+    for (size_t i = 0; i < d; i++) {
+        auto bits = signed_binary_decompose(r2[i], log_b);
+        witness.insert(witness.end(), bits.begin(), bits.end());
+    }
+    return witness;
+}
+
+// static void msm_g2(blst_p2* out, const blst_p2_affine* points, const blst_scalar* scalars, size_t n) {
+//     if (n == 0) {
+//         memset(out, 0, sizeof(blst_p2));
+//         return;
+//     }
+//     blst_p2 acc;
+//     blst_p2_from_affine(&acc, &points[0]);
+//     blst_p2_mult(&acc, &acc, scalars[0].b, 256);
+//     for (size_t i = 1; i < n; i++) {
+//         blst_p2 term;
+//         blst_p2_from_affine(&term, &points[i]);
+//         blst_p2_mult(&term, &term, scalars[i].b, 256);
+//         blst_p2_add(&acc, &acc, &term);
+//     }
+//     *out = acc;
+// }
+static void msm_g2(blst_p2* out, const blst_p2_affine* points, const blst_scalar* scalars, size_t n) {
+    if (n == 0) {
+        memset(out, 0, sizeof(blst_p2));
+        return;
+    }
+
+
+    std::vector<const blst_p2_affine*> point_ptrs(n);
+    for (size_t i = 0; i < n; i++) {
+        point_ptrs[i] = &points[i];
+    }
+
+
+    std::vector<uint8_t> scalar_bytes(n * 32);
+    std::vector<const uint8_t*> scalar_ptrs(n);
+    for (size_t i = 0; i < n; i++) {
+        blst_lendian_from_scalar(&scalar_bytes[i * 32], &scalars[i]);
+        scalar_ptrs[i] = &scalar_bytes[i * 32];
+    }
+
+
+    size_t scratch_size = blst_p2s_mult_pippenger_scratch_sizeof(n);
+    std::vector<limb_t> scratch(scratch_size / sizeof(limb_t) + 1);
+
+
+    blst_p2s_mult_pippenger(
+        out,
+        point_ptrs.data(),
+        n,
+        scalar_ptrs.data(),
+        256,
+        scratch.data()
+    );
+}
+
+// ============================================================================
+
+// ============================================================================
+
+Proof::Proof() {
+    c_hat_ptr = new blst_p2_affine;
+    c_y_ptr = new blst_p1_affine;
+    c_h_ptr = new blst_p1_affine;
+    pi_ptr = new blst_p1_affine;
+    std::memset(c_hat_ptr, 0, sizeof(blst_p2_affine));
+    std::memset(c_y_ptr, 0, sizeof(blst_p1_affine));
+    std::memset(c_h_ptr, 0, sizeof(blst_p1_affine));
+    std::memset(pi_ptr, 0, sizeof(blst_p1_affine));
+}
+
+Proof::~Proof() {
+    delete static_cast<blst_p2_affine*>(c_hat_ptr);
+    delete static_cast<blst_p1_affine*>(c_y_ptr);
+    delete static_cast<blst_p1_affine*>(c_h_ptr);
+    delete static_cast<blst_p1_affine*>(pi_ptr);
+}
+
+Proof::Proof(Proof&& other) noexcept {
+    c_hat_ptr = other.c_hat_ptr;
+    c_y_ptr = other.c_y_ptr;
+    c_h_ptr = other.c_h_ptr;
+    pi_ptr = other.pi_ptr;
+    other.c_hat_ptr = nullptr;
+    other.c_y_ptr = nullptr;
+    other.c_h_ptr = nullptr;
+    other.pi_ptr = nullptr;
+}
+
+Proof& Proof::operator=(Proof&& other) noexcept {
+    if (this != &other) {
+        delete static_cast<blst_p2_affine*>(c_hat_ptr);
+        delete static_cast<blst_p1_affine*>(c_y_ptr);
+        delete static_cast<blst_p1_affine*>(c_h_ptr);
+        delete static_cast<blst_p1_affine*>(pi_ptr);
+        c_hat_ptr = other.c_hat_ptr;
+        c_y_ptr = other.c_y_ptr;
+        c_h_ptr = other.c_h_ptr;
+        pi_ptr = other.pi_ptr;
+        other.c_hat_ptr = nullptr;
+        other.c_y_ptr = nullptr;
+        other.c_h_ptr = nullptr;
+        other.pi_ptr = nullptr;
+    }
+    return *this;
+}
+
+std::vector<uint8_t> Proof::serialize() const {
+    std::vector<uint8_t> buffer;
+    uint8_t c_hat_bytes[96];
+    blst_p2_affine_compress(c_hat_bytes, static_cast<const blst_p2_affine*>(c_hat_ptr));
+    buffer.insert(buffer.end(), c_hat_bytes, c_hat_bytes + 96);
+    uint8_t c_y_bytes[48];
+    blst_p1_affine_compress(c_y_bytes, static_cast<const blst_p1_affine*>(c_y_ptr));
+    buffer.insert(buffer.end(), c_y_bytes, c_y_bytes + 48);
+    uint8_t c_h_bytes[48];
+    blst_p1_affine_compress(c_h_bytes, static_cast<const blst_p1_affine*>(c_h_ptr));
+    buffer.insert(buffer.end(), c_h_bytes, c_h_bytes + 48);
+    uint8_t pi_bytes[48];
+    blst_p1_affine_compress(pi_bytes, static_cast<const blst_p1_affine*>(pi_ptr));
+    buffer.insert(buffer.end(), pi_bytes, pi_bytes + 48);
+    return buffer;
+}
+
+Proof Proof::deserialize(const std::vector<uint8_t>& data) {
+    if (data.size() != 240) throw std::runtime_error("Invalid proof size");
+    Proof proof;
+    blst_p2_uncompress(static_cast<blst_p2_affine*>(proof.c_hat_ptr), data.data());
+    blst_p1_uncompress(static_cast<blst_p1_affine*>(proof.c_y_ptr), data.data() + 96);
+    blst_p1_uncompress(static_cast<blst_p1_affine*>(proof.c_h_ptr), data.data() + 144);
+    blst_p1_uncompress(static_cast<blst_p1_affine*>(proof.pi_ptr), data.data() + 192);
+    return proof;
+}
+
+// ============================================================================
+
+// ============================================================================
+
+template<typename P>
+PublicParams<P>::PublicParams() : g_list_ptr(nullptr), g_hat_list_ptr(nullptr),
+    n(0), d(0), k(0), b(0), b_r(0), q(0), t(0), msbs_zero_padding_bit_count(0) {}
+
+template<typename P>
+PublicParams<P>::~PublicParams() {
+    if (g_list_ptr) delete[] static_cast<blst_p1_affine*>(g_list_ptr);
+    if (g_hat_list_ptr) delete[] static_cast<blst_p2_affine*>(g_hat_list_ptr);
+}
+
+template<typename P>
+PublicParams<P>::PublicParams(PublicParams&& other) noexcept {
+    g_list_ptr = other.g_list_ptr;
+    g_hat_list_ptr = other.g_hat_list_ptr;
+    n = other.n; d = other.d; k = other.k;
+    b = other.b; b_r = other.b_r; q = other.q; t = other.t;
+    msbs_zero_padding_bit_count = other.msbs_zero_padding_bit_count;
+    sid = other.sid;
+    hash_ds = other.hash_ds; hash_t_ds = other.hash_t_ds;
+    hash_agg_ds = other.hash_agg_ds; hash_lmap_ds = other.hash_lmap_ds;
+    hash_z_ds = other.hash_z_ds; hash_w_ds = other.hash_w_ds;
+    hash_gamma_ds = other.hash_gamma_ds;
+    other.g_list_ptr = nullptr;
+    other.g_hat_list_ptr = nullptr;
+}
+
+template<typename P>
+PublicParams<P>& PublicParams<P>::operator=(PublicParams&& other) noexcept {
+    if (this != &other) {
+        if (g_list_ptr) delete[] static_cast<blst_p1_affine*>(g_list_ptr);
+        if (g_hat_list_ptr) delete[] static_cast<blst_p2_affine*>(g_hat_list_ptr);
+        g_list_ptr = other.g_list_ptr;
+        g_hat_list_ptr = other.g_hat_list_ptr;
+        n = other.n; d = other.d; k = other.k;
+        b = other.b; b_r = other.b_r; q = other.q; t = other.t;
+        msbs_zero_padding_bit_count = other.msbs_zero_padding_bit_count;
+        sid = other.sid;
+        hash_ds = other.hash_ds; hash_t_ds = other.hash_t_ds;
+        hash_agg_ds = other.hash_agg_ds; hash_lmap_ds = other.hash_lmap_ds;
+        hash_z_ds = other.hash_z_ds; hash_w_ds = other.hash_w_ds;
+        hash_gamma_ds = other.hash_gamma_ds;
+        other.g_list_ptr = nullptr;
+        other.g_hat_list_ptr = nullptr;
+    }
+    return *this;
+}
+
+template<typename P>
+PublicParams<P> generate_public_params(
+    uint64_t b, uint64_t b_r, uint64_t q, uint64_t t,
+    uint64_t msbs_zero_padding_bit_count,
+    const std::array<uint8_t, SEED_LEN>& alpha_seed
+) {
+    PublicParams<P> params;
+    params.d = P::n;
+    params.k = P::n;
+    params.b = b;
+    params.b_r = b_r;
+    params.q = q;
+    params.t = t;
+    params.msbs_zero_padding_bit_count = msbs_zero_padding_bit_count;
+
+    uint64_t effective_t = t >> msbs_zero_padding_bit_count;
+    size_t log_t = effective_t > 1 ? (64 - __builtin_clzll(effective_t - 1)) : 1;
+    size_t log_b = b > 0 ? (64 - __builtin_clzll(b)) + 1 : 1;
+    size_t log_br = b_r > 0 ? (64 - __builtin_clzll(b_r)) + 1 : 1;
+
+    const size_t d = params.d;
+    size_t big_d = d * (1 + log_t + 3 * log_b + log_br);
+    params.n = big_d;
+
+    std::mt19937_64 rng(*(uint64_t*)alpha_seed.data());
+    for (auto& byte : params.hash_ds) byte = rng() & 0xFF;
+    for (auto& byte : params.hash_t_ds) byte = rng() & 0xFF;
+    for (auto& byte : params.hash_agg_ds) byte = rng() & 0xFF;
+    for (auto& byte : params.hash_lmap_ds) byte = rng() & 0xFF;
+    for (auto& byte : params.hash_z_ds) byte = rng() & 0xFF;
+    for (auto& byte : params.hash_w_ds) byte = rng() & 0xFF;
+    for (auto& byte : params.hash_gamma_ds) byte = rng() & 0xFF;
+    for (auto& byte : params.sid) byte = rng() & 0xFF;
+
+    blst_scalar alpha;
+    blst_scalar_from_lendian(&alpha, alpha_seed.data());
+
+    params.g_list_ptr = new blst_p1_affine[2 * params.n];
+    params.g_hat_list_ptr = new blst_p2_affine[params.n];
+
+    blst_p1_affine* g_list = static_cast<blst_p1_affine*>(params.g_list_ptr);
+    blst_p2_affine* g_hat_list = static_cast<blst_p2_affine*>(params.g_hat_list_ptr);
+
+    const blst_p1_affine* g1_gen = blst_p1_affine_generator();
+    const blst_p2_affine* g2_gen = blst_p2_affine_generator();
+
+
+    std::vector<blst_p1> g1_powers(2 * params.n);
+    blst_p1_from_affine(&g1_powers[0], g1_gen);
+    for (size_t i = 1; i < 2 * params.n; i++) {
+        blst_p1_mult(&g1_powers[i], &g1_powers[i-1], alpha.b, 256);
+    }
+
+
+    #pragma omp parallel for
+    for (size_t i = 0; i < 2 * params.n; i++) {
+        blst_p1_to_affine(&g_list[i], &g1_powers[i]);
+    }
+
+
+    std::vector<blst_p2> g2_powers(params.n);
+    blst_p2_from_affine(&g2_powers[0], g2_gen);
+    for (size_t i = 1; i < params.n; i++) {
+        blst_p2_mult(&g2_powers[i], &g2_powers[i-1], alpha.b, 256);
+    }
+
+
+    #pragma omp parallel for
+    for (size_t i = 0; i < params.n; i++) {
+        blst_p2_to_affine(&g_hat_list[i], &g2_powers[i]);
+    }
+
+    return params;
+}
+
+// // ============================================================================
+
+// // ============================================================================
+
+// template<typename P>
+// PublicCommit<P> make_public_commit(
+//     const PKE::SeededLwePublicKey<P>& cpk,
+//     const TFHEpp::TLWE<P>& ct,
+//     size_t k
+// ) {
+//     PublicCommit<P> commit;
+//     commit.d = P::n;
+//     commit.k = k;
+
+//     commit.a.resize(P::n);
+//     commit.b.resize(cpk.b_list.size());
+
+
+//     for (size_t i = 0; i < P::n; i++) {
+//         std::mt19937_64 rng(cpk.seed ^ (0x9E3779B97F4A7C15ULL + (i<<1)));
+//         std::uniform_int_distribution<typename P::T> U;
+//         commit.a[i] = static_cast<int64_t>(U(rng));
+//     }
+
+
+//     for (size_t i = 0; i < cpk.b_list.size() && i < commit.b.size(); i++) {
+//         commit.b[i] = static_cast<int64_t>(cpk.b_list[i]);
+//     }
+
+
+//     commit.c1.resize(P::n);
+//     commit.c2.resize(k);
+//     for (size_t i = 0; i < P::n; i++) {
+//         commit.c1[i] = static_cast<int64_t>(ct[i]);
+//     }
+//     commit.c2[0] = static_cast<int64_t>(ct[P::n]);
+
+//     return commit;
+// }
+
+// ============================================================================
+
+// ============================================================================
+
+template<typename P>
+PublicCommit<P> make_public_commit(
+    const PKE::SeededRlwePkPair<P>& spk,
+    const TFHEpp::TRLWE<P>& ct
+) {
+    PublicCommit<P> commit;
+    commit.d = P::n;
+    commit.k = P::n;
+
+
+    commit.a.resize(P::n);
+    TFHEpp::Polynomial<P> a_poly;
+    PKE::uniform_poly_from_seed<P>(a_poly, spk.seed, 0);
+    for (size_t i = 0; i < P::n; i++) {
+        commit.a[i] = static_cast<int64_t>(a_poly[i]);
+    }
+
+    commit.b.resize(P::n);
+    for (size_t i = 0; i < P::n; i++) {
+        commit.b[i] = static_cast<int64_t>(spk.b[i]);
+    }
+
+    commit.c1.resize(P::n);
+    for (size_t i = 0; i < P::n; i++) {
+        commit.c1[i] = static_cast<int64_t>(ct[0][i]);
+    }
+
+    commit.c2.resize(P::n);
+    for (size_t i = 0; i < P::n; i++) {
+        commit.c2[i] = static_cast<int64_t>(ct[P::k][i]);
+    }
+
+    return commit;
+}
+
+
+// ============================================================================
+// make_private_commit
+// ============================================================================
+
+template<typename P>
+PrivateCommit<P> make_private_commit(
+    const std::vector<int64_t>& r,
+    const std::vector<int64_t>& e1,
+    const std::vector<int64_t>& e2,
+    const std::vector<int64_t>& m
+) {
+
+    if (r.size() != P::n || e1.size() != P::n || e2.size() != P::n || m.size() != P::n) {
+        throw std::runtime_error("PrivateCommit vectors must have length P::n");
+    }
+
+    PrivateCommit<P> commit;
+    commit.d = P::n;
+    commit.k = P::n;
+    commit.r = r;
+    commit.e1 = e1;
+    commit.e2 = e2;
+    commit.m = m;
+    return commit;
+}
+
+// ============================================================================
+
+// ============================================================================
+template<typename P>
+static blst_scalar compute_gamma_from_public_commit(
+    const PublicParams<P>& params,
+    const PublicCommit<P>& public_commit,
+    const std::vector<uint8_t>& metadata
+) {
+    auto append_i64 = [](std::vector<uint8_t>& dst, int64_t v) {
+        uint8_t b[8];
+        std::memcpy(b, &v, 8);
+        dst.insert(dst.end(), b, b + 8);
+    };
+
+    std::vector<uint8_t> t_gamma;
+    t_gamma.insert(t_gamma.end(), params.hash_gamma_ds.begin(), params.hash_gamma_ds.end());
+
+    for (auto v : public_commit.a)  append_i64(t_gamma, v);
+    for (auto v : public_commit.b)  append_i64(t_gamma, v);
+    for (auto v : public_commit.c1) append_i64(t_gamma, v);
+    for (auto v : public_commit.c2) append_i64(t_gamma, v);
+    t_gamma.insert(t_gamma.end(), metadata.begin(), metadata.end());
+
+    uint8_t gamma_bytes[32];
+    shake256_hash(t_gamma.data(), t_gamma.size(), gamma_bytes, 32);
+
+    blst_scalar gamma;
+    blst_scalar_from_lendian(&gamma, gamma_bytes);
+    return gamma;
+}
+
+// ============================================================================
+
+// ============================================================================
+
+template<typename P>
+Proof prove(
+    const PublicParams<P>& params,
+    const PublicCommit<P>& public_commit,
+    const PrivateCommit<P>& private_commit,
+    const std::vector<uint8_t>& metadata,
+    ComputeLoad load,
+    const std::array<uint8_t, SEED_LEN>& seed
+) {
+    (void)load;
+    (void)seed;
+
+    const size_t d = params.d;
+    const size_t k = params.k;
+
+    __uint128_t decoded_q = decode_q(params.q);
+    uint64_t delta = (uint64_t)(decoded_q / params.t);
+
+    auto r1 = compute_r1(
+        private_commit.e1, public_commit.c1, public_commit.a, private_commit.r,
+        d, decoded_q
+    );
+    auto r2 = compute_r2(
+        private_commit.e2, public_commit.c2, private_commit.m, public_commit.b,
+        private_commit.r, d, delta, decoded_q
+    );
+
+    auto witness = construct_witness(
+    private_commit.r, private_commit.m,
+    private_commit.e1, private_commit.e2,
+    r1, r2,
+    d,
+    params.b, params.b_r, params.t,
+    params.msbs_zero_padding_bit_count
+    );
+
+    auto append_i64 = [](std::vector<uint8_t>& dst, int64_t v) {
+        uint8_t b[8];
+        std::memcpy(b, &v, 8);
+        dst.insert(dst.end(), b, b + 8);
+    };
+
+    const size_t used_n = std::min(witness.size(), params.n);
+
+    std::vector<blst_scalar> w_scalars(used_n);
+    for (size_t i = 0; i < used_n; i++) {
+        uint8_t bit_bytes[32] = {0};
+        bit_bytes[0] = witness[i] & 1;
+        blst_scalar_from_lendian(&w_scalars[i], bit_bytes);
+    }
+
+    blst_p2_affine* g_hat_list = static_cast<blst_p2_affine*>(params.g_hat_list_ptr);
+    blst_p2 c_hat_msm;
+    msm_g2(&c_hat_msm, g_hat_list, w_scalars.data(), used_n);
+
+    const blst_p2_affine* g2_gen = blst_p2_affine_generator();
+    blst_p2 g2_term;
+    blst_p2_from_affine(&g2_term, g2_gen);
+
+    // ============================================
+
+    // ============================================
+    blst_scalar gamma = compute_gamma_from_public_commit(params, public_commit, metadata);
+
+
+    blst_p2 c_hat = c_hat_msm;
+    blst_p2 gamma_term = g2_term;
+    blst_p2_mult(&gamma_term, &gamma_term, gamma.b, 256);
+    blst_p2_add(&c_hat, &c_hat, &gamma_term);
+
+    Proof proof;
+    blst_p2_to_affine(static_cast<blst_p2_affine*>(proof.c_hat_ptr), &c_hat);
+
+    uint8_t c_hat_bytes[96];
+    blst_p2_affine_compress(
+        c_hat_bytes,
+        static_cast<blst_p2_affine*>(proof.c_hat_ptr)
+    );
+
+
+    std::vector<uint8_t> t_y;
+    t_y.insert(t_y.end(), params.hash_ds.begin(), params.hash_ds.end());
+    t_y.insert(t_y.end(), c_hat_bytes, c_hat_bytes + 96);
+    for (auto v : public_commit.a)  append_i64(t_y, v);
+    for (auto v : public_commit.b)  append_i64(t_y, v);
+    for (auto v : public_commit.c1) append_i64(t_y, v);
+    for (auto v : public_commit.c2) append_i64(t_y, v);
+    t_y.insert(t_y.end(), metadata.begin(), metadata.end());
+
+    uint8_t y_bytes[32];
+    shake256_hash(t_y.data(), t_y.size(), y_bytes, 32);
+
+    blst_scalar y_scalar;
+    blst_scalar_from_lendian(&y_scalar, y_bytes);
+
+
+    std::vector<uint8_t> t_gamma_y;
+    t_gamma_y.insert(t_gamma_y.end(), params.hash_w_ds.begin(), params.hash_w_ds.end());
+    t_gamma_y.insert(t_gamma_y.end(), y_bytes, y_bytes + 32);
+    t_gamma_y.insert(t_gamma_y.end(), c_hat_bytes, c_hat_bytes + 96);
+    for (auto v : public_commit.a)  append_i64(t_gamma_y, v);
+    for (auto v : public_commit.b)  append_i64(t_gamma_y, v);
+    for (auto v : public_commit.c1) append_i64(t_gamma_y, v);
+    for (auto v : public_commit.c2) append_i64(t_gamma_y, v);
+    t_gamma_y.insert(t_gamma_y.end(), metadata.begin(), metadata.end());
+
+    uint8_t gamma_y_bytes[32];
+    shake256_hash(t_gamma_y.data(), t_gamma_y.size(), gamma_y_bytes, 32);
+
+    blst_scalar gamma_y;
+    blst_scalar_from_lendian(&gamma_y, gamma_y_bytes);
+
+    blst_p1_affine* g_list = static_cast<blst_p1_affine*>(params.g_list_ptr);
+    const blst_p1_affine* g1_gen = blst_p1_affine_generator();
+
+    // c_y = gamma_y * g1 + sum(witness[i] * y * g_list[i])
+    blst_p1 c_y;
+    blst_p1_from_affine(&c_y, g1_gen);
+    blst_p1_mult(&c_y, &c_y, gamma_y.b, 256);
+
+    for (size_t i = 0; i < used_n; i++) {
+        if ((witness[i] & 1) == 0) continue;
+        blst_p1 term;
+        blst_p1_from_affine(&term, &g_list[i]);
+        blst_p1_mult(&term, &term, y_scalar.b, 256);
+        blst_p1_add(&c_y, &c_y, &term);
+    }
+
+    blst_p1_to_affine(static_cast<blst_p1_affine*>(proof.c_y_ptr), &c_y);
+
+    blst_p1_affine zero1_aff;
+    std::memset(&zero1_aff, 0, sizeof(zero1_aff));
+    std::memcpy(static_cast<blst_p1_affine*>(proof.pi_ptr), &zero1_aff, sizeof(zero1_aff));
+    std::memcpy(static_cast<blst_p1_affine*>(proof.c_h_ptr), &zero1_aff, sizeof(zero1_aff));
+
+    return proof;
+}
+
+// ============================================================================
+
+// ============================================================================
+
+template<typename P>
+bool verify(
+    const Proof& proof,
+    const PublicParams<P>& params,
+    const PublicCommit<P>& public_commit,
+    const std::vector<uint8_t>& metadata
+) {
+    auto append_i64 = [](std::vector<uint8_t>& dst, int64_t v) {
+        uint8_t b[8];
+        std::memcpy(b, &v, 8);
+        dst.insert(dst.end(), b, b + 8);
+    };
+
+    uint8_t c_hat_bytes[96];
+    blst_p2_affine_compress(
+        c_hat_bytes,
+        static_cast<const blst_p2_affine*>(proof.c_hat_ptr)
+    );
+
+
+    std::vector<uint8_t> t_y;
+    t_y.insert(t_y.end(), params.hash_ds.begin(), params.hash_ds.end());
+    t_y.insert(t_y.end(), c_hat_bytes, c_hat_bytes + 96);
+    for (auto v : public_commit.a)  append_i64(t_y, v);
+    for (auto v : public_commit.b)  append_i64(t_y, v);
+    for (auto v : public_commit.c1) append_i64(t_y, v);
+    for (auto v : public_commit.c2) append_i64(t_y, v);
+    t_y.insert(t_y.end(), metadata.begin(), metadata.end());
+
+    uint8_t y_bytes[32];
+    shake256_hash(t_y.data(), t_y.size(), y_bytes, 32);
+
+    blst_scalar y_scalar;
+    blst_scalar_from_lendian(&y_scalar, y_bytes);
+
+    // ============================================
+
+    // ============================================
+    blst_scalar gamma = compute_gamma_from_public_commit(params, public_commit, metadata);
+
+
+    std::vector<uint8_t> t_gamma_y;
+    t_gamma_y.insert(t_gamma_y.end(), params.hash_w_ds.begin(), params.hash_w_ds.end());
+    t_gamma_y.insert(t_gamma_y.end(), y_bytes, y_bytes + 32);
+    t_gamma_y.insert(t_gamma_y.end(), c_hat_bytes, c_hat_bytes + 96);
+    for (auto v : public_commit.a)  append_i64(t_gamma_y, v);
+    for (auto v : public_commit.b)  append_i64(t_gamma_y, v);
+    for (auto v : public_commit.c1) append_i64(t_gamma_y, v);
+    for (auto v : public_commit.c2) append_i64(t_gamma_y, v);
+    t_gamma_y.insert(t_gamma_y.end(), metadata.begin(), metadata.end());
+
+    uint8_t gamma_y_bytes[32];
+    shake256_hash(t_gamma_y.data(), t_gamma_y.size(), gamma_y_bytes, 32);
+
+    blst_scalar gamma_y;
+    blst_scalar_from_lendian(&gamma_y, gamma_y_bytes);
+
+    const blst_p1_affine* g1_gen = blst_p1_affine_generator();
+    const blst_p2_affine* g2_gen = blst_p2_affine_generator();
+
+
+    blst_p2 C2, tmp2;
+    blst_p2_from_affine(&C2, static_cast<const blst_p2_affine*>(proof.c_hat_ptr));
+    blst_p2_from_affine(&tmp2, g2_gen);
+    blst_p2_mult(&tmp2, &tmp2, gamma.b, 256);
+    blst_p2_cneg(&tmp2, 1);
+    blst_p2_add(&C2, &C2, &tmp2);
+
+
+    blst_p1 C1, tmp1;
+    blst_p1_from_affine(&C1, static_cast<const blst_p1_affine*>(proof.c_y_ptr));
+    blst_p1_from_affine(&tmp1, g1_gen);
+    blst_p1_mult(&tmp1, &tmp1, gamma_y.b, 256);
+    blst_p1_cneg(&tmp1, 1);
+    blst_p1_add(&C1, &C1, &tmp1);
+
+    // yC2 = y * C2
+    blst_p2 yC2 = C2;
+    blst_p2_mult(&yC2, &yC2, y_scalar.b, 256);
+
+    blst_p1_affine C1_aff;
+    blst_p2_affine yC2_aff;
+    blst_p1_to_affine(&C1_aff, &C1);
+    blst_p2_to_affine(&yC2_aff, &yC2);
+
+
+    blst_fp12 lhs, rhs;
+    blst_miller_loop(&lhs, g2_gen, &C1_aff);
+    blst_final_exp(&lhs, &lhs);
+
+    blst_miller_loop(&rhs, &yC2_aff, g1_gen);
+    blst_final_exp(&rhs, &rhs);
+
+    return blst_fp12_is_equal(&lhs, &rhs);
+}
+
+// ============================================================================
+
+// ============================================================================
+
+template<typename P>
+void save_public_params(const PublicParams<P>& params, const std::string& filename) {
+    std::ofstream ofs(filename, std::ios::binary);
+    if (!ofs) throw std::runtime_error("Cannot open CRS file for writing: " + filename);
+
+    // Magic + version
+    const char magic[4] = {'Z','K','C','1'};
+    ofs.write(magic, 4);
+
+
+    ofs.write(reinterpret_cast<const char*>(&params.n), sizeof(params.n));
+    ofs.write(reinterpret_cast<const char*>(&params.d), sizeof(params.d));
+    ofs.write(reinterpret_cast<const char*>(&params.k), sizeof(params.k));
+    ofs.write(reinterpret_cast<const char*>(&params.b), sizeof(params.b));
+    ofs.write(reinterpret_cast<const char*>(&params.b_r), sizeof(params.b_r));
+    ofs.write(reinterpret_cast<const char*>(&params.q), sizeof(params.q));
+    ofs.write(reinterpret_cast<const char*>(&params.t), sizeof(params.t));
+    ofs.write(reinterpret_cast<const char*>(&params.msbs_zero_padding_bit_count),
+              sizeof(params.msbs_zero_padding_bit_count));
+
+
+    ofs.write(reinterpret_cast<const char*>(params.sid.data()), 16);
+    ofs.write(reinterpret_cast<const char*>(params.hash_ds.data()), 16);
+    ofs.write(reinterpret_cast<const char*>(params.hash_t_ds.data()), 16);
+    ofs.write(reinterpret_cast<const char*>(params.hash_agg_ds.data()), 16);
+    ofs.write(reinterpret_cast<const char*>(params.hash_lmap_ds.data()), 16);
+    ofs.write(reinterpret_cast<const char*>(params.hash_z_ds.data()), 16);
+    ofs.write(reinterpret_cast<const char*>(params.hash_w_ds.data()), 16);
+    ofs.write(reinterpret_cast<const char*>(params.hash_gamma_ds.data()), 16);
+
+
+    const blst_p1_affine* g_list = static_cast<const blst_p1_affine*>(params.g_list_ptr);
+    ofs.write(reinterpret_cast<const char*>(g_list),
+              2 * params.n * sizeof(blst_p1_affine));
+
+
+    const blst_p2_affine* g_hat_list = static_cast<const blst_p2_affine*>(params.g_hat_list_ptr);
+    ofs.write(reinterpret_cast<const char*>(g_hat_list),
+              params.n * sizeof(blst_p2_affine));
+
+    if (!ofs) throw std::runtime_error("Failed writing CRS file: " + filename);
+
+
+    auto pos = ofs.tellp();
+    std::cout << "  CRS saved: " << pos / 1024 / 1024 << " MB (" << filename << ")\n";
+}
+
+template<typename P>
+PublicParams<P> load_public_params(const std::string& filename) {
+    std::ifstream ifs(filename, std::ios::binary);
+    if (!ifs) throw std::runtime_error("Cannot open CRS file for reading: " + filename);
+
+
+    char magic[4];
+    ifs.read(magic, 4);
+    if (std::memcmp(magic, "ZKC1", 4) != 0) {
+        throw std::runtime_error("Invalid CRS file format (bad magic)");
+    }
+
+    PublicParams<P> params;
+
+
+    ifs.read(reinterpret_cast<char*>(&params.n), sizeof(params.n));
+    ifs.read(reinterpret_cast<char*>(&params.d), sizeof(params.d));
+    ifs.read(reinterpret_cast<char*>(&params.k), sizeof(params.k));
+    ifs.read(reinterpret_cast<char*>(&params.b), sizeof(params.b));
+    ifs.read(reinterpret_cast<char*>(&params.b_r), sizeof(params.b_r));
+    ifs.read(reinterpret_cast<char*>(&params.q), sizeof(params.q));
+    ifs.read(reinterpret_cast<char*>(&params.t), sizeof(params.t));
+    ifs.read(reinterpret_cast<char*>(&params.msbs_zero_padding_bit_count),
+              sizeof(params.msbs_zero_padding_bit_count));
+
+
+    if (params.d != P::n) {
+        throw std::runtime_error(
+            "CRS parameter mismatch: file has d=" + std::to_string(params.d) +
+            " but P::n=" + std::to_string(P::n));
+    }
+
+
+    ifs.read(reinterpret_cast<char*>(params.sid.data()), 16);
+    ifs.read(reinterpret_cast<char*>(params.hash_ds.data()), 16);
+    ifs.read(reinterpret_cast<char*>(params.hash_t_ds.data()), 16);
+    ifs.read(reinterpret_cast<char*>(params.hash_agg_ds.data()), 16);
+    ifs.read(reinterpret_cast<char*>(params.hash_lmap_ds.data()), 16);
+    ifs.read(reinterpret_cast<char*>(params.hash_z_ds.data()), 16);
+    ifs.read(reinterpret_cast<char*>(params.hash_w_ds.data()), 16);
+    ifs.read(reinterpret_cast<char*>(params.hash_gamma_ds.data()), 16);
+
+
+    params.g_list_ptr = new blst_p1_affine[2 * params.n];
+    ifs.read(reinterpret_cast<char*>(params.g_list_ptr),
+             2 * params.n * sizeof(blst_p1_affine));
+
+
+    params.g_hat_list_ptr = new blst_p2_affine[params.n];
+    ifs.read(reinterpret_cast<char*>(params.g_hat_list_ptr),
+             params.n * sizeof(blst_p2_affine));
+
+    if (!ifs) {
+        throw std::runtime_error("CRS file truncated or corrupted: " + filename);
+    }
+
+    return params;
+}
+
+// ============================================================================
+
+// ============================================================================
+
+template class PublicParams<TFHEpp::lvl2param>;
+template class PublicCommit<TFHEpp::lvl2param>;
+template class PrivateCommit<TFHEpp::lvl2param>;
+
+
+template PublicParams<TFHEpp::lvl2param> generate_public_params<TFHEpp::lvl2param>(
+    uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+    const std::array<uint8_t, SEED_LEN>&
+);
+
+
+template PublicCommit<TFHEpp::lvl2param> make_public_commit<TFHEpp::lvl2param>(
+    const PKE::SeededRlwePkPair<TFHEpp::lvl2param>&,
+    const TFHEpp::TRLWE<TFHEpp::lvl2param>&
+);
+
+template PrivateCommit<TFHEpp::lvl2param> make_private_commit<TFHEpp::lvl2param>(
+    const std::vector<int64_t>&,
+    const std::vector<int64_t>&,
+    const std::vector<int64_t>&,
+    const std::vector<int64_t>&
+);
+
+template Proof prove<TFHEpp::lvl2param>(
+    const PublicParams<TFHEpp::lvl2param>&,
+    const PublicCommit<TFHEpp::lvl2param>&,
+    const PrivateCommit<TFHEpp::lvl2param>&,
+    const std::vector<uint8_t>&,
+    ComputeLoad,
+    const std::array<uint8_t, SEED_LEN>&
+);
+
+template bool verify<TFHEpp::lvl2param>(
+    const Proof&,
+    const PublicParams<TFHEpp::lvl2param>&,
+    const PublicCommit<TFHEpp::lvl2param>&,
+    const std::vector<uint8_t>&
+);
+
+template void save_public_params<TFHEpp::lvl2param>(
+    const PublicParams<TFHEpp::lvl2param>&,
+    const std::string&
+);
+
+template PublicParams<TFHEpp::lvl2param> load_public_params<TFHEpp::lvl2param>(
+    const std::string&
+);
+
+
+} // namespace ZKProof

@@ -1,0 +1,162 @@
+name: cargo_build
+
+on:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-C target-cpu=native"
+  RUST_BACKTRACE: "full"
+  RUST_MIN_STACK: "8388608"
+  CHECKOUT_TOKEN: ${{ secrets.REPO_CHECKOUT_TOKEN || secrets.GITHUB_TOKEN }}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  prepare-parallel-pcc-matrix:
+    name: cargo_build/prepare-parallel-pcc-matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix_command: ${{ steps.set-pcc-commands-matrix.outputs.commands }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: "false"
+          token: ${{ env.CHECKOUT_TOKEN }}
+
+      # Fetch all the Make recipes that start with `pcc_batch_`
+      - name: Set pcc commands matrix
+        id: set-pcc-commands-matrix
+        run: |
+          COMMANDS=$(grep -oE '^pcc_batch_[^:]*:' Makefile | sed 's/:/\"/; s/^/\"/' | paste -sd,)
+          echo "commands=[${COMMANDS}]" >> "$GITHUB_OUTPUT"
+
+  parallel-pcc-cpu:
+    name: cargo_build/parallel-pcc-cpu
+    needs: prepare-parallel-pcc-matrix
+    strategy:
+      matrix:
+        command: ${{ fromJson(needs.prepare-parallel-pcc-matrix.outputs.matrix_command)}}
+      fail-fast: false
+    uses: ./.github/workflows/cargo_build_common.yml
+    with:
+      run-pcc-cpu-batch: ${{ matrix.command }}
+    secrets:
+      BOT_USERNAME: ${{ secrets.BOT_USERNAME }}
+      SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+      SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+      REPO_CHECKOUT_TOKEN: ${{ secrets.REPO_CHECKOUT_TOKEN }}
+      JOB_SECRET: ${{ secrets.JOB_SECRET }}
+      SLAB_ACTION_TOKEN: ${{ secrets.SLAB_ACTION_TOKEN }}
+      SLAB_URL: ${{ secrets.SLAB_URL }}
+      SLAB_BASE_URL: ${{ secrets.SLAB_BASE_URL }}
+
+  pcc-hpu:
+    name: cargo_build/pcc-hpu
+    uses: ./.github/workflows/cargo_build_common.yml
+    with:
+      run-pcc-hpu: true
+    secrets:
+      BOT_USERNAME: ${{ secrets.BOT_USERNAME }}
+      SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+      SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+      REPO_CHECKOUT_TOKEN: ${{ secrets.REPO_CHECKOUT_TOKEN }}
+      JOB_SECRET: ${{ secrets.JOB_SECRET }}
+      SLAB_ACTION_TOKEN: ${{ secrets.SLAB_ACTION_TOKEN }}
+      SLAB_URL: ${{ secrets.SLAB_URL }}
+      SLAB_BASE_URL: ${{ secrets.SLAB_BASE_URL }}
+
+  build-tfhe-full:
+    name: cargo_build/build-tfhe-full
+    uses: ./.github/workflows/cargo_build_common.yml
+    with:
+      run-build-tfhe-full: true
+      # GitHub macos-latest are now M1 macs, so use ours, we limit what runs so it will be fast
+      # even with a few PRs
+      extra-runners-to-use: macos-latest-xlarge,large_windows_16_latest
+    secrets:
+      BOT_USERNAME: ${{ secrets.BOT_USERNAME }}
+      SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+      SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+      REPO_CHECKOUT_TOKEN: ${{ secrets.REPO_CHECKOUT_TOKEN }}
+      JOB_SECRET: ${{ secrets.JOB_SECRET }}
+      SLAB_ACTION_TOKEN: ${{ secrets.SLAB_ACTION_TOKEN }}
+      SLAB_URL: ${{ secrets.SLAB_URL }}
+      SLAB_BASE_URL: ${{ secrets.SLAB_BASE_URL }}
+
+  build:
+    name: cargo_build/build
+    uses: ./.github/workflows/cargo_build_common.yml
+    with:
+      run-build: true
+    secrets:
+      BOT_USERNAME: ${{ secrets.BOT_USERNAME }}
+      SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+      SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+      REPO_CHECKOUT_TOKEN: ${{ secrets.REPO_CHECKOUT_TOKEN }}
+      JOB_SECRET: ${{ secrets.JOB_SECRET }}
+      SLAB_ACTION_TOKEN: ${{ secrets.SLAB_ACTION_TOKEN }}
+      SLAB_URL: ${{ secrets.SLAB_URL }}
+      SLAB_BASE_URL: ${{ secrets.SLAB_BASE_URL }}
+
+  build-layers:
+    name: cargo_build/build-layers
+    uses: ./.github/workflows/cargo_build_common.yml
+    with:
+      run-build-layers: true
+    secrets:
+      BOT_USERNAME: ${{ secrets.BOT_USERNAME }}
+      SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+      SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+      REPO_CHECKOUT_TOKEN: ${{ secrets.REPO_CHECKOUT_TOKEN }}
+      JOB_SECRET: ${{ secrets.JOB_SECRET }}
+      SLAB_ACTION_TOKEN: ${{ secrets.SLAB_ACTION_TOKEN }}
+      SLAB_URL: ${{ secrets.SLAB_URL }}
+      SLAB_BASE_URL: ${{ secrets.SLAB_BASE_URL }}
+
+  build-c-api:
+    name: cargo_build/build-c-api
+    uses: ./.github/workflows/cargo_build_common.yml
+    with:
+      run-build-c-api: true
+    secrets:
+      BOT_USERNAME: ${{ secrets.BOT_USERNAME }}
+      SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+      SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+      REPO_CHECKOUT_TOKEN: ${{ secrets.REPO_CHECKOUT_TOKEN }}
+      JOB_SECRET: ${{ secrets.JOB_SECRET }}
+      SLAB_ACTION_TOKEN: ${{ secrets.SLAB_ACTION_TOKEN }}
+      SLAB_URL: ${{ secrets.SLAB_URL }}
+      SLAB_BASE_URL: ${{ secrets.SLAB_BASE_URL }}
+
+  cargo-builds:
+    name: cargo_build/cargo-builds (bpr)
+    needs: [ parallel-pcc-cpu, pcc-hpu, build-tfhe-full, build, build-layers, build-c-api ]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check all builds success
+        if: needs.parallel-pcc-cpu.outputs.builds-result == 'success' &&
+          needs.pcc-hpu.outputs.builds-result == 'success' &&
+          needs.build-tfhe-full.outputs.builds-result == 'success' &&
+          needs.build.outputs.builds-result == 'success' &&
+          needs.build-layers.outputs.builds-result == 'success' &&
+          needs.build-c-api.outputs.builds-result == 'success'
+        run: |
+          echo "All tfhe-rs build checks passed"
+
+      - name: Check builds failure
+        if: needs.parallel-pcc-cpu.outputs.builds-result != 'success' ||
+          needs.pcc-hpu.outputs.builds-result != 'success' ||
+          needs.build-tfhe-full.outputs.builds-result != 'success' ||
+          needs.build.outputs.builds-result != 'success' ||
+          needs.build-layers.outputs.builds-result != 'success' ||
+          needs.build-c-api.outputs.builds-result != 'success'
+        run: |
+          echo "Some tfhe-rs build checks failed"
+          exit 1

@@ -1,0 +1,17 @@
+[advisories]
+ignore = [
+    # Ignoring unmaintained 'paste' advisory as it is a widely used, low-risk build dependency.
+    "RUSTSEC-2024-0436",
+    # Ignoring unmaintained 'bincode' crate. Getting rid of it would be too complex on the short term.
+    "RUSTSEC-2025-0141",
+    # Ignoring unsoundness in 'rand' with custom logger. Rand update is currently blocked by
+    # arkworks and we do not use custom loggers.
+    "RUSTSEC-2026-0097",
+]
+
+[output]
+# Deny advisories that are warnings by default.
+# At the moment this works if we allow paste, we might want to disable this in the future if it
+# becomes too tedious
+deny = ["warnings"]
+quiet = false

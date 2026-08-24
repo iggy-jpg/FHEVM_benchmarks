@@ -1,0 +1,28 @@
+add_executable(comparison_test comparison_test.cpp )
+
+target_link_libraries(comparison_test ARCEDB)
+
+add_executable(simd_comparison_test simd_comparison_test.cpp )
+
+target_link_libraries(simd_comparison_test ARCEDB)
+
+add_executable(time_series_queries_test time_series_queries_test.cpp )
+
+target_link_libraries(time_series_queries_test ARCEDB)
+
+add_executable(relational_queries_test relational_queries_test.cpp )
+
+target_link_libraries(relational_queries_test ARCEDB)
+
+add_executable(hybrid_transaction_test hybrid_transaction_test.cpp )
+
+target_link_libraries(hybrid_transaction_test ARCEDB)
+
+add_executable(integer_perf_matrix_test integer_perf_matrix_test.cpp)
+target_link_libraries(integer_perf_matrix_test ARCEDB)
+
+add_executable(erc20_64_test erc20_64_test.cpp)
+target_link_libraries(erc20_64_test ARCEDB)
+
+add_executable(tpch_q6_16_test tpch_q6_16_test.cpp)
+target_link_libraries(tpch_q6_16_test ARCEDB)

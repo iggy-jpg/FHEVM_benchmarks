@@ -1,0 +1,9 @@
+op,bits,epochs,metric,value_ms,rc,cmd,notes
+GT,8,2,SER,174.703,0,./build/Coprocessor-operator/test_GT 8 2 --no-epoch-detail,
+GT,8,2,PAR,149.781,0,./build/Coprocessor-operator/test_GT 8 2 --no-epoch-detail,
+LT,8,2,SER,172.54,0,./build/Coprocessor-operator/test_LT 8 2 --no-epoch-detail,
+LT,8,2,PAR,133.981,0,./build/Coprocessor-operator/test_LT 8 2 --no-epoch-detail,
+GE,8,2,SER,173.851,0,./build/Coprocessor-operator/test_GE 8 2 --no-epoch-detail,
+GE,8,2,PAR,136.377,0,./build/Coprocessor-operator/test_GE 8 2 --no-epoch-detail,
+LE,8,2,SER,197.201,0,./build/Coprocessor-operator/test_LE 8 2 --no-epoch-detail,
+LE,8,2,PAR,143.778,0,./build/Coprocessor-operator/test_LE 8 2 --no-epoch-detail,

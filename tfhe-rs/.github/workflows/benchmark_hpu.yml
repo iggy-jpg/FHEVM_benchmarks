@@ -1,0 +1,72 @@
+# Run benchmarks on a permanent HPU instance and return parsed results to Slab CI bot.
+name: benchmark_hpu
+
+run-name: ${{ inputs.command }}::${{ inputs.bench_type}} (${{ inputs.op_flavor }}, ${{ inputs.precisions_set }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "Benchmark command to run"
+        type: choice
+        default: integer
+        options:
+          - integer
+          - hlapi_unsigned
+          - hlapi_signed
+          - hlapi_erc7984
+      op_flavor:
+        description: "Operations set to run"
+        type: choice
+        default: default
+        options:
+          - default
+          - fast_default
+      precisions_set:
+        description: "Bit precisions set"
+        type: choice
+        default: fast
+        options:
+          - fast
+          - all
+          - documentation
+      bench_type:
+        description: "Benchmarks type"
+        type: choice
+        default: latency
+        options:
+          - latency
+          - throughput
+          - both
+      v80_pcie_dev:
+        description: "V80 PCIe device number"
+        default: 24
+      v80_serial_number:
+        description: "V80 serial number"
+        default: XFL12NWY3ZKG
+
+permissions: {}
+
+# zizmor: ignore[concurrency-limits] only Zama organization members can trigger this workflow
+
+jobs:
+  run-benchmarks:
+    name: benchmark_hpu/run-benchmarks
+    uses: ./.github/workflows/benchmark_hpu_common.yml
+    with:
+      command: ${{ inputs.command }}
+      op_flavor: ${{ inputs.op_flavor }}
+      bench_type: ${{ inputs.bench_type }}
+      precisions_set: ${{ inputs.precisions_set }}
+      v80_pcie_dev: ${{ inputs.v80_pcie_dev }}
+      v80_serial_number: ${{ inputs.v80_serial_number }}
+    secrets:
+      BOT_USERNAME: ${{ secrets.BOT_USERNAME }}
+      SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+      SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+      REPO_CHECKOUT_TOKEN: ${{ secrets.REPO_CHECKOUT_TOKEN }}
+      JOB_SECRET: ${{ secrets.JOB_SECRET }}
+      SLAB_ACTION_TOKEN: ${{ secrets.SLAB_ACTION_TOKEN }}
+      SLAB_URL: ${{ secrets.SLAB_URL }}
+      SLAB_BASE_URL: ${{ secrets.SLAB_BASE_URL }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}

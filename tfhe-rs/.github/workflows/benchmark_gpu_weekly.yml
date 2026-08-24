@@ -1,0 +1,34 @@
+# Run CUDA benchmarks on Hyperstack VM and return parsed results to Slab CI bot.
+name: benchmark_gpu_weekly
+
+run-name: GPU weekly benchmarks
+
+on:
+  schedule:
+    # Weekly benchmarks will be triggered each Saturday at 1a.m.
+    - cron: '0 1 * * 6'
+
+permissions: {}
+
+# zizmor: ignore[concurrency-limits] only GitHub can trigger this workflow
+
+jobs:
+  run-benchmarks-8-h100-sxm5-summary:
+    name: benchmark_gpu_weekly/run-benchmarks-8-h100-sxm5-summary
+    if: github.repository == 'zama-ai/tfhe-rs'
+    uses: ./.github/workflows/benchmark_gpu_common.yml
+    with:
+      profile: multi-h100-sxm5
+      hardware_name: n3-H100-SXM5x8
+      command: summary
+      bench_type: both
+      params_type: classical + multi_bit
+    secrets:
+      BOT_USERNAME: ${{ secrets.BOT_USERNAME }}
+      SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+      SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+      REPO_CHECKOUT_TOKEN: ${{ secrets.REPO_CHECKOUT_TOKEN }}
+      JOB_SECRET: ${{ secrets.JOB_SECRET }}
+      SLAB_ACTION_TOKEN: ${{ secrets.SLAB_ACTION_TOKEN }}
+      SLAB_URL: ${{ secrets.SLAB_URL }}
+      SLAB_BASE_URL: ${{ secrets.SLAB_BASE_URL }}

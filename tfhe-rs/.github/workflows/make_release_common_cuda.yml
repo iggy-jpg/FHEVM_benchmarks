@@ -1,0 +1,261 @@
+# Common workflow to make crate release for CUDA backend
+name: make_release_common_cuda
+
+on:
+  workflow_call:
+    inputs:
+      package-name:
+        type: string
+        required: true
+      dry-run:
+        type: boolean
+        default: true
+    secrets:
+      REPO_CHECKOUT_TOKEN:
+        required: true
+      SLAB_ACTION_TOKEN:
+        required: true
+      SLAB_BASE_URL:
+        required: true
+      SLAB_URL:
+        required: true
+      JOB_SECRET:
+        required: true
+      SLACK_CHANNEL:
+        required: true
+      BOT_USERNAME:
+        required: true
+      SLACK_WEBHOOK:
+        required: true
+      ALLOWED_TEAM:
+        required: true
+      READ_ORG_TOKEN:
+        required: true
+
+env:
+  ACTION_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+  SLACK_ICON: https://pbs.twimg.com/profile_images/1274014582265298945/OjBKP9kn_400x400.png
+  SLACK_USERNAME: ${{ secrets.BOT_USERNAME }}
+  SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+
+permissions: {}
+
+# zizmor: ignore[concurrency-limits] only Zama organization members can trigger this workflow
+
+jobs:
+  verify-triggering-actor:
+    name: make_release_common_cuda/verify-triggering-actor
+    if: startsWith(github.ref, 'refs/tags/')
+    uses: ./.github/workflows/verify_triggering_actor.yml
+    secrets:
+      ALLOWED_TEAM: ${{ secrets.ALLOWED_TEAM }}
+      READ_ORG_TOKEN: ${{ secrets.READ_ORG_TOKEN }}
+
+  setup-instance:
+    name: make_release_common_cuda/setup-instance
+    needs: verify-triggering-actor
+    runs-on: ubuntu-latest
+    outputs:
+      runner-name: ${{ steps.start-instance.outputs.label }}
+    steps:
+      - name: Start instance
+        id: start-instance
+        uses: zama-ai/slab-github-runner@5aee5d157f4a0201e5eaefc9cc648e5f9f5472a5 # v1.6.0
+        with:
+          mode: start
+          github-token: ${{ secrets.SLAB_ACTION_TOKEN }}
+          slab-url: ${{ secrets.SLAB_BASE_URL }}
+          job-secret: ${{ secrets.JOB_SECRET }}
+          backend: aws
+          profile: gpu-build
+
+  package:
+    name: make_release_common_cuda/package
+    needs: setup-instance
+    runs-on: ${{ needs.setup-instance.outputs.runner-name }}
+    outputs:
+      hash: ${{ steps.hash.outputs.hash }}
+    strategy:
+      fail-fast: false
+      # explicit include-based build matrix, of known valid options
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            cuda: "12.2"
+            gcc: 9
+    env:
+      CUDA_PATH: /usr/local/cuda-${{ matrix.cuda }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: "false"
+          token: ${{ secrets.REPO_CHECKOUT_TOKEN }}
+
+      - name: Install latest stable
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # zizmor: ignore[stale-action-refs] this action doesn't create releases
+        with:
+          toolchain: stable
+
+      - name: Export CUDA variables
+        run: |
+          echo "$CUDA_PATH/bin" >> "${GITHUB_PATH}"
+          {
+            echo "CUDA_PATH=$CUDA_PATH";
+            echo "LD_LIBRARY_PATH=$CUDA_PATH/lib:$LD_LIBRARY_PATH";
+            echo "CUDACXX=/usr/local/cuda-${CUDA_VERSION}/bin/nvcc";
+          } >> "${GITHUB_ENV}"
+        env:
+          CUDA_VERSION: ${{ matrix.cuda }}
+
+      # Specify the correct host compilers
+      - name: Export gcc and g++ variables
+        run: |
+          {
+            echo "CC=/usr/bin/gcc-${GCC_VERSION}";
+            echo "CXX=/usr/bin/g++-${GCC_VERSION}";
+            echo "CUDAHOSTCXX=/usr/bin/g++-${GCC_VERSION}";
+            echo "HOME=/home/ubuntu";
+          } >> "${GITHUB_ENV}"
+        env:
+          GCC_VERSION: ${{ matrix.gcc }}
+
+      - name: Prepare package
+        env:
+          PACKAGE: ${{ inputs.package-name }}
+        run: |
+          cargo package -p "${PACKAGE}"
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: crate-${{ inputs.package-name }}
+          path: target/package/*.crate
+
+      - name: generate hash
+        id: hash
+        run: cd target/package && echo "hash=$(sha256sum ./*.crate | base64 -w0)" >> "${GITHUB_OUTPUT}"
+
+  provenance:
+    name: make_release_common_cuda/provenance
+    if: ${{ !inputs.dry-run  }}
+    needs: [package]
+    # This action cannot be pinned to a specific commit (see https://github.com/slsa-framework/slsa-github-generator/blob/main/README.md#referencing-slsa-builders-and-generators)
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0 # zizmor: ignore[unpinned-uses] as said above SLSA cannot be pinned by tag today
+    permissions:
+      actions: read # Needed to detect the GitHub Actions environment
+      id-token: write # Needed to create the provenance via GitHub OIDC
+      contents: write # Needed to upload assets/artifacts
+    with:
+      # SHA-256 hashes of the Crate package.
+      base64-subjects: ${{ needs.package.outputs.hash }}
+
+  publish-cuda-release:
+    name: make_release_common_cuda/publish-cuda-release
+    needs: [setup-instance, package] # for comparing hashes
+    runs-on: ${{ needs.setup-instance.outputs.runner-name }}
+    permissions:
+      id-token: write # Needed for OIDC token exchange on crates.io
+    strategy:
+      fail-fast: false
+      # explicit include-based build matrix, of known valid options
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            cuda: "12.2"
+            gcc: 9
+    env:
+      CUDA_PATH: /usr/local/cuda-${{ matrix.cuda }}
+    steps:
+      - name: Install latest stable
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # zizmor: ignore[stale-action-refs] this action doesn't create releases
+        with:
+          toolchain: stable
+
+      - name: Export CUDA variables
+        run: |
+          echo "$CUDA_PATH/bin" >> "${GITHUB_PATH}"
+          {
+            echo "CUDA_PATH=$CUDA_PATH";
+            echo "LD_LIBRARY_PATH=$CUDA_PATH/lib:$LD_LIBRARY_PATH";
+            echo "CUDACXX=/usr/local/cuda-${CUDA_VERSION}/bin/nvcc";
+          } >> "${GITHUB_ENV}"
+        env:
+          CUDA_VERSION: ${{ matrix.cuda }}
+
+      # Specify the correct host compilers
+      - name: Export gcc and g++ variables
+        run: |
+          {
+            echo "CC=/usr/bin/gcc-${GCC_VERSION}";
+            echo "CXX=/usr/bin/g++-${GCC_VERSION}";
+            echo "CUDAHOSTCXX=/usr/bin/g++-${GCC_VERSION}";
+            echo "HOME=/home/ubuntu";
+          } >> "${GITHUB_ENV}"
+        env:
+          GCC_VERSION: ${{ matrix.gcc }}
+
+      - name: Download artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: crate-${{ inputs.package-name }}
+          path: target/package
+
+      - name: Authenticate on registry
+        uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe # v1.0.4
+        id: auth
+
+      - name: Publish crate.io package
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          PACKAGE: ${{ inputs.package-name }}
+          DRY-RUN: ${{ inputs.dry-run && '--dry-run' || '' }}
+        run: |
+          # dry-run expansion cannot be double quoted when variable contains empty string otherwise cargo publish
+          # would fail. This is safe since dry-run is handled in the env section above.
+          # shellcheck disable=SC2086
+          cargo publish -p "${PACKAGE}" ${DRY-RUN}
+
+      - name: Generate hash
+        id: published_hash
+        run: cd target/package && echo "pub_hash=$(sha256sum ./*.crate | base64 -w0)" >> "${GITHUB_OUTPUT}"
+
+      - name: Slack notification (hashes comparison)
+        if: ${{ needs.package.outputs.hash != steps.published_hash.outputs.pub_hash }}
+        continue-on-error: true
+        uses: rtCamp/action-slack-notify@e31e87e03dd19038e411e38ae27cbad084a90661 # v2.3.3
+        env:
+          SLACK_COLOR: failure
+          SLACK_MESSAGE: "SLSA ${{ inputs.package-name }} crate - hash comparison failure: (${{ env.ACTION_RUN_URL }})"
+
+      - name: Slack Notification
+        if: ${{ failure() || (cancelled() && github.event_name != 'pull_request') }}
+        continue-on-error: true
+        uses: rtCamp/action-slack-notify@e31e87e03dd19038e411e38ae27cbad084a90661 # v2.3.3
+        env:
+          SLACK_COLOR: ${{ job.status }}
+          SLACK_MESSAGE: "${{ inputs.package-name }} release finished with status: ${{ job.status }}. (${{ env.ACTION_RUN_URL }})"
+
+  teardown-instance:
+    name: make_release_common_cuda/teardown-instance
+    if: ${{ always() && needs.setup-instance.result == 'success' }}
+    needs: [setup-instance, publish-cuda-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stop instance
+        id: stop-instance
+        uses: zama-ai/slab-github-runner@5aee5d157f4a0201e5eaefc9cc648e5f9f5472a5 # v1.6.0
+        with:
+          mode: stop
+          github-token: ${{ secrets.SLAB_ACTION_TOKEN }}
+          slab-url: ${{ secrets.SLAB_BASE_URL }}
+          job-secret: ${{ secrets.JOB_SECRET }}
+          label: ${{ needs.setup-instance.outputs.runner-name }}
+
+      - name: Slack Notification
+        if: ${{ failure() }}
+        uses: rtCamp/action-slack-notify@e31e87e03dd19038e411e38ae27cbad084a90661
+        env:
+          SLACK_COLOR: ${{ job.status }}
+          SLACK_MESSAGE: "Instance teardown (${{ inputs.package-name }} release) finished with status: ${{ job.status }}. (${{ env.ACTION_RUN_URL }})"

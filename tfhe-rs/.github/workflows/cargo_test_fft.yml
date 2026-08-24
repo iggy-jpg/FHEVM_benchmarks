@@ -1,0 +1,132 @@
+# Test tfhe-fft
+name: cargo_test_fft
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+
+env:
+  CARGO_TERM_COLOR: always
+  IS_PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
+  CHECKOUT_TOKEN: ${{ secrets.REPO_CHECKOUT_TOKEN || secrets.GITHUB_TOKEN }}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref }}${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  should-run:
+    name: cargo_test_fft/should-run
+    if: github.event_name != 'push' ||
+      (github.event_name == 'push' && github.repository == 'zama-ai/tfhe-rs')
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read  # Needed to check for file change
+    outputs:
+      fft_test: ${{ env.IS_PULL_REQUEST == 'false' || steps.changed-files.outputs.fft_any_changed }}
+    steps:
+      - name: Checkout tfhe-rs
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          persist-credentials: 'false'
+          token: ${{ env.CHECKOUT_TOKEN }}
+
+      - name: Check for file changes
+        id: changed-files
+        uses: tj-actions/changed-files@22103cc46bda19c2b464ffe86db46df6922fd323 # v47.0.5
+        with:
+          files_yaml: |
+            fft:
+              - tfhe/Cargo.toml
+              - Makefile
+              - tfhe-fft/**
+              - '.github/workflows/cargo_test_fft.yml'
+
+  cargo-tests-fft:
+    name: cargo_test_fft/cargo-tests-fft
+    needs: should-run
+    if: needs.should-run.outputs.fft_test == 'true'
+    runs-on: ${{ matrix.runner_type }}
+    strategy:
+      matrix:
+        runner_type: [ ubuntu-latest, macos-latest, windows-latest ]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: 'false'
+          token: ${{ env.CHECKOUT_TOKEN }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # zizmor: ignore[stale-action-refs] this action doesn't create releases
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Test avx2
+        run: |
+          make test_fft
+
+      - name: Test serialization
+        run: make test_fft_serde
+
+      - name: Test no-std avx2
+        run: |
+          make test_fft_no_std
+
+      - name: Test avx512
+        run: |
+          make test_fft_avx512
+
+      - name: Test no-std avx512
+        run: |
+          make test_fft_no_std_avx512
+
+  cargo-tests-fft-node-js:
+    name: cargo_test_fft/cargo-tests-fft-node-js
+    needs: should-run
+    if: needs.should-run.outputs.fft_test == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: 'false'
+          token: ${{ env.CHECKOUT_TOKEN }}
+
+      - name: Test node js
+        run: |
+          make install_node
+          make test_fft_node_js_ci
+
+  cargo-tests-fft-successful:
+    name: cargo_test_fft/cargo-tests-fft-successful (bpr)
+    needs: [ should-run, cargo-tests-fft, cargo-tests-fft-node-js ]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Tests do not need to run
+        if: needs.should-run.outputs.fft_test == 'false'
+        run: |
+          echo "tfhe-fft files haven't changed tests don't need to run"
+
+      - name: Check all tests passed
+        if: needs.should-run.outputs.fft_test == 'true' &&
+          needs.cargo-tests-fft.result == 'success' &&
+          needs.cargo-tests-fft-node-js.result == 'success'
+        run: |
+          echo "All tfhe-fft test passed"
+
+      - name: Check tests failure
+        if: needs.should-run.outputs.fft_test == 'true' &&
+          (needs.cargo-tests-fft.result != 'success' ||
+          needs.cargo-tests-fft-node-js.result != 'success')
+        run: |
+          echo "Some tfhe-fft tests failed"
+          exit 1

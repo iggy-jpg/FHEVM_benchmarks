@@ -1,0 +1,163 @@
+# Test tfhe-ntt
+name: cargo_test_ntt
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+
+env:
+  CARGO_TERM_COLOR: always
+  ACTION_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  IS_PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
+  CHECKOUT_TOKEN: ${{ secrets.REPO_CHECKOUT_TOKEN || secrets.GITHUB_TOKEN }}
+  SECRETS_AVAILABLE: ${{ secrets.JOB_SECRET != '' }}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref }}${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  should-run:
+    name: cargo_test_ntt/should-run
+    if: github.event_name != 'push' ||
+      (github.event_name == 'push' && github.repository == 'zama-ai/tfhe-rs')
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read  # Needed to check for file change
+    outputs:
+      ntt_test: ${{ env.IS_PULL_REQUEST == 'false' || steps.changed-files.outputs.ntt_any_changed }}
+    steps:
+      - name: Checkout tfhe-rs
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          persist-credentials: "false"
+          token: ${{ env.CHECKOUT_TOKEN }}
+
+      - name: Check for file changes
+        id: changed-files
+        uses: tj-actions/changed-files@22103cc46bda19c2b464ffe86db46df6922fd323 # v47.0.5
+        with:
+          files_yaml: |
+            ntt:
+              - tfhe/Cargo.toml
+              - Makefile
+              - tfhe-ntt/**
+              - '.github/workflows/cargo_test_ntt.yml'
+
+  setup-instance:
+    name: cargo_test_ntt/setup-instance
+    needs: should-run
+    if: needs.should-run.outputs.ntt_test == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      matrix_os: ${{ steps.set-os-matrix.outputs.matrix_os }}
+      runner-name: ${{ steps.start-remote-instance.outputs.label }}
+    steps:
+      - name: Start remote instance
+        id: start-remote-instance
+        if: env.SECRETS_AVAILABLE == 'true'
+        uses: zama-ai/slab-github-runner@5aee5d157f4a0201e5eaefc9cc648e5f9f5472a5 # v1.6.0
+        with:
+          mode: start
+          github-token: ${{ secrets.SLAB_ACTION_TOKEN }}
+          slab-url: ${{ secrets.SLAB_BASE_URL }}
+          job-secret: ${{ secrets.JOB_SECRET }}
+          backend: aws
+          profile: cpu-small
+
+      - name: Set os matrix
+        id: set-os-matrix
+        env:
+          SLAB_INSTANCE: ${{ steps.start-remote-instance.outputs.label }}
+        run: |
+          INSTANCE_TO_USE="${SLAB_INSTANCE:-ubuntu-latest}"
+          echo "matrix_os=[\"${INSTANCE_TO_USE}\", \"macos-latest\", \"windows-latest\"]" >> "$GITHUB_OUTPUT"
+
+  cargo-tests-ntt:
+    name: cargo_test_ntt/cargo-tests-ntt
+    needs: [should-run, setup-instance]
+    if: needs.should-run.outputs.ntt_test == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: ${{fromJson(needs.setup-instance.outputs.matrix_os)}}
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: "false"
+          token: ${{ env.CHECKOUT_TOKEN }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # zizmor: ignore[stale-action-refs] this action doesn't create releases
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Test avx2
+        run: make test_ntt
+
+      - name: Test no-std avx2
+        run: make test_ntt_no_std
+
+      - name: Test avx512
+        run: make test_ntt_avx512
+
+      - name: Test no-std avx512
+        run: make test_ntt_no_std_avx512
+
+  cargo-tests-ntt-successful:
+    name: cargo_test_ntt/cargo-tests-ntt-successful (bpr)
+    needs: [should-run, cargo-tests-ntt]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Tests do not need to run
+        if: needs.should-run.outputs.ntt_test == 'false'
+        run: |
+          echo "tfhe-ntt files haven't changed tests don't need to run"
+
+      - name: Check all tests success
+        if: needs.should-run.outputs.ntt_test == 'true' &&
+          needs.cargo-tests-ntt.result == 'success'
+        run: |
+          echo "All tfhe-ntt tests passed"
+
+      - name: Check tests failure
+        if: needs.should-run.outputs.ntt_test == 'true' &&
+          needs.cargo-tests-ntt.result != 'success'
+        run: |
+          echo "Some tfhe-ntt tests failed"
+          exit 1
+
+  teardown-instance:
+    name: cargo_test_ntt/teardown-instance
+    if: ${{ always() && needs.setup-instance.result == 'success' }}
+    needs: [setup-instance, cargo-tests-ntt-successful]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stop remote instance
+        id: stop-instance
+        if: env.SECRETS_AVAILABLE == 'true'
+        uses: zama-ai/slab-github-runner@5aee5d157f4a0201e5eaefc9cc648e5f9f5472a5 # v1.6.0
+        with:
+          mode: stop
+          github-token: ${{ secrets.SLAB_ACTION_TOKEN }}
+          slab-url: ${{ secrets.SLAB_BASE_URL }}
+          job-secret: ${{ secrets.JOB_SECRET }}
+          label: ${{ needs.setup-instance.outputs.runner-name }}
+
+      - name: Slack Notification
+        if: ${{ failure() }}
+        continue-on-error: true
+        uses: rtCamp/action-slack-notify@e31e87e03dd19038e411e38ae27cbad084a90661
+        env:
+          SLACK_COLOR: ${{ job.status }}
+          SLACK_MESSAGE: "Instance teardown (cargo-tests-ntt) finished with status: ${{ job.status }}. (${{ env.ACTION_RUN_URL }})"

@@ -1,0 +1,10 @@
+# Git LFS data from tfhe-rs
+*.cbor
+*.bcode
+*.hpu
+
+tfhe-rs/apps/test-vectors/data/
+tfhe-rs/tests/corrupted_inputs_deserialization/data/
+tfhe-rs/utils/tfhe-backward-compat-data/
+tfhe-rs/backends/tfhe-hpu-backend/config_store/
+tfhe-rs/backends/tfhe-hpu-backend/python/lib/example.json

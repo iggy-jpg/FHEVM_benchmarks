@@ -1,0 +1,48 @@
+# Build tfhe-ntt
+name: cargo_build_tfhe_ntt
+
+on:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  CHECKOUT_TOKEN: ${{ secrets.REPO_CHECKOUT_TOKEN || secrets.GITHUB_TOKEN }}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-builds-ntt:
+    name: cargo_build_tfhe_ntt/cargo-builds-ntt (bpr)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: 'false'
+          token: ${{ env.CHECKOUT_TOKEN }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # zizmor: ignore[stale-action-refs] this action doesn't create releases
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Run pcc checks
+        run: |
+          make pcc_ntt
+
+      - name: Build release
+        run: |
+          make build_ntt
+
+      - name: Build release no-std
+        run: |
+          make build_ntt_no_std

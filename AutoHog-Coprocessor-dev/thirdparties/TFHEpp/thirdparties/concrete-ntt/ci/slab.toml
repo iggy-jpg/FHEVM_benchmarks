@@ -1,0 +1,4 @@
+[backend.aws.bench]
+region = "eu-west-1"
+image_id = "ami-0e88d98b86aff13de"
+instance_type = "hpc7a.96xlarge"

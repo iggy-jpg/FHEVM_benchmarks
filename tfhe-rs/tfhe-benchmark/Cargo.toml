@@ -1,0 +1,232 @@
+[package]
+name = "tfhe-benchmark"
+version = "0.1.0"
+edition = "2021"
+homepage = "https://zama.org/"
+documentation = "https://docs.zama.org/tfhe-rs"
+repository = "https://github.com/zama-ai/tfhe-rs"
+license = "BSD-3-Clause-Clear"
+description = "tfhe-benchmark: Performances measurements facility for tfhe-rs."
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "benchmark"
+path = "src/lib.rs"
+
+[dependencies]
+bincode = { workspace = true }
+# clap has to be pinned as its minimum supported rust version
+# changes often between minor releases, which breaks our CI
+clap = { version = "=4.5.30", features = ["derive"] }
+criterion = "0.5.1"
+dyn-stack = { workspace = true, features = ["default"] }
+itertools = "0.14"
+serde = { version = "1.0", default-features = false }
+serde_json = "1.0.94"
+paste = { workspace = true }
+rand = { workspace = true }
+rayon = { workspace = true }
+tfhe = { path = "../tfhe", default-features = false }
+tfhe-csprng = { path = "../tfhe-csprng" }
+tfhe-zk-pok = { path = "../tfhe-zk-pok", optional = true }
+cpu-time = "1.0"
+num_cpus = "1.17"
+gag = "1.0.0"
+benchmark_spec = { version = "0.1.0", path = "../utils/benchmark_spec" }
+
+[features]
+default = ["avx512"]
+boolean = ["tfhe/boolean"]
+shortint = ["tfhe/shortint"]
+integer = ["shortint", "tfhe/integer"]
+gpu = ["tfhe/gpu"]
+# gpu enables tfhe-cuda-backend which provides CUDA stream management used by tfhe-zk-pok
+gpu-experimental-zk = [
+    "gpu",
+    "zk-pok",
+    "tfhe/gpu-experimental-zk",
+    "tfhe-zk-pok/gpu-experimental",
+]
+hpu = ["tfhe/hpu"]
+hpu-v80 = ["tfhe/hpu-v80"]
+internal-keycache = ["tfhe/internal-keycache"]
+avx512 = ["tfhe/avx512"]
+pbs-stats = ["tfhe/pbs-stats"]
+zk-pok = ["tfhe/zk-pok", "dep:tfhe-zk-pok"]
+
+[[bench]]
+name = "boolean"
+path = "benches/boolean/bench.rs"
+harness = false
+required-features = ["boolean", "internal-keycache"]
+
+[[bench]]
+name = "shortint"
+path = "benches/shortint/bench.rs"
+harness = false
+required-features = ["shortint", "internal-keycache"]
+
+[[bench]]
+name = "shortint-oprf"
+path = "benches/shortint/oprf.rs"
+harness = false
+required-features = ["shortint", "internal-keycache"]
+
+[[bench]]
+name = "shortint-glwe_packing_compression"
+path = "benches/shortint/glwe_packing_compression.rs"
+harness = false
+required-features = ["shortint", "internal-keycache"]
+
+[[bench]]
+name = "hlapi_unsigned"
+path = "benches/high_level_api/bench_unsigned.rs"
+harness = false
+required-features = ["integer", "internal-keycache", "pbs-stats"]
+
+[[bench]]
+name = "hlapi_signed"
+path = "benches/high_level_api/bench_signed.rs"
+harness = false
+required-features = ["integer", "internal-keycache", "pbs-stats"]
+
+[[bench]]
+name = "hlapi-erc7984"
+path = "benches/high_level_api/erc7984.rs"
+harness = false
+required-features = ["integer", "internal-keycache"]
+
+[[bench]]
+name = "hlapi-dex"
+path = "benches/high_level_api/dex.rs"
+harness = false
+required-features = ["integer", "internal-keycache"]
+
+[[bench]]
+name = "hlapi-noise-squash"
+path = "benches/high_level_api/noise_squash.rs"
+harness = false
+required-features = ["integer", "internal-keycache"]
+
+[[bench]]
+name = "hlapi-kvstore"
+path = "benches/high_level_api/kv_store.rs"
+harness = false
+required-features = ["integer", "internal-keycache", "pbs-stats"]
+
+[[bench]]
+name = "integer-glwe_packing_compression"
+path = "benches/integer/glwe_packing_compression.rs"
+harness = false
+required-features = ["integer", "pbs-stats", "internal-keycache"]
+
+[[bench]]
+name = "integer-rerand"
+path = "benches/integer/rerand.rs"
+harness = false
+required-features = ["integer", "pbs-stats", "internal-keycache"]
+
+[[bench]]
+name = "glwe_packing_compression_128b-integer-bench"
+path = "benches/integer/glwe_packing_compression_128b.rs"
+harness = false
+required-features = ["integer", "pbs-stats", "internal-keycache"]
+
+[[bench]]
+name = "integer"
+path = "benches/integer/bench.rs"
+harness = false
+required-features = ["integer", "pbs-stats", "internal-keycache"]
+
+[[bench]]
+name = "integer-signed"
+path = "benches/integer/signed_bench.rs"
+harness = false
+required-features = ["integer", "pbs-stats", "internal-keycache"]
+
+[[bench]]
+name = "integer-zk-pke"
+path = "benches/integer/zk_pke.rs"
+harness = false
+required-features = ["integer", "zk-pok", "pbs-stats", "internal-keycache"]
+
+[[bench]]
+name = "integer-aes"
+path = "benches/integer/aes.rs"
+harness = false
+required-features = ["integer", "internal-keycache"]
+
+[[bench]]
+name = "integer-trivium"
+path = "benches/integer/trivium.rs"
+harness = false
+required-features = ["integer", "internal-keycache"]
+
+[[bench]]
+name = "integer-kreyvium"
+path = "benches/integer/kreyvium.rs"
+harness = false
+required-features = ["integer", "internal-keycache"]
+
+[[bench]]
+name = "integer-aes256"
+path = "benches/integer/aes256.rs"
+harness = false
+required-features = ["integer", "internal-keycache"]
+
+[[bench]]
+name = "core_crypto-ks"
+path = "benches/core_crypto/ks_bench.rs"
+harness = false
+required-features = ["shortint", "internal-keycache"]
+
+[[bench]]
+name = "core_crypto-pbs"
+path = "benches/core_crypto/pbs_bench.rs"
+harness = false
+required-features = ["boolean", "shortint", "internal-keycache"]
+
+[[bench]]
+name = "core_crypto-ks-pbs"
+path = "benches/core_crypto/ks_pbs_bench.rs"
+harness = false
+required-features = ["shortint", "internal-keycache"]
+
+[[bench]]
+name = "core_crypto-modulus_switch_noise_reduction"
+path = "benches/core_crypto/modulus_switch_noise_reduction.rs"
+harness = false
+required-features = ["shortint"]
+
+[[bench]]
+name = "core_crypto-pbs128"
+path = "benches/core_crypto/pbs128_bench.rs"
+harness = false
+required-features = ["shortint", "internal-keycache"]
+
+[[bench]]
+name = "zk-msm"
+path = "benches/zk/msm.rs"
+harness = false
+required-features = ["zk-pok"]
+
+[[bin]]
+name = "boolean_key_sizes"
+path = "src/bin/boolean_key_sizes.rs"
+required-features = ["boolean", "internal-keycache"]
+
+[[bin]]
+name = "shortint_key_sizes"
+path = "src/bin/shortint_key_sizes.rs"
+required-features = ["shortint", "internal-keycache"]
+
+[[bin]]
+name = "hlapi_compact_pk_ct_sizes"
+path = "src/bin/hlapi_ct_sizes.rs"
+required-features = ["integer", "internal-keycache"]
+
+[[bin]]
+name = "wasm_benchmarks_parser"
+path = "src/bin/wasm_benchmarks_parser.rs"
+required-features = ["shortint", "internal-keycache"]

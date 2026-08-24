@@ -1,0 +1,10 @@
+op,bits,epochs,metric,value_ms,rc,cmd,notes
+ADD,8,2,SER,172.253,0,./build/Coprocessor-operator/test_ADD 8 2 --no-epoch-detail,
+ADD,8,2,PAR,350.518,0,./build/Coprocessor-operator/test_ADD 8 2 --no-epoch-detail,
+SUB,8,2,SER,162.251,0,./build/Coprocessor-operator/test_SUB 8 2 --no-epoch-detail,
+SUB,8,2,PAR,313.841,0,./build/Coprocessor-operator/test_SUB 8 2 --no-epoch-detail,
+AND,8,2,AVG,54.4966,0,./build/Coprocessor-operator/test_AND 8 2 --no-epoch-detail,
+EQ,8,2,SER,204.858,0,./build/Coprocessor-operator/test_EQ 8 2 --no-epoch-detail,
+EQ,8,2,PAR,99.82,0,./build/Coprocessor-operator/test_EQ 8 2 --no-epoch-detail,
+GT,8,2,AVG,211.897,0,./build/Coprocessor-operator/test_GT 8 2 --no-epoch-detail,
+NOT,8,2,AVG,0.0573205,0,./build/Coprocessor-operator/test_NOT 8 2 --no-epoch-detail,

@@ -1,0 +1,50 @@
+# Sync repos
+name: sync_on_push
+
+on:
+  push:
+    branches:
+      - "main"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+jobs:
+  sync-repo:
+    name: sync_on_push/sync-repo
+    if: ${{ github.repository == 'zama-ai/tfhe-rs' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: git-sync
+        env:
+          SOURCE_REPO: "zama-ai/tfhe-rs"
+          SOURCE_BRANCH: "main"
+          DESTINATION_BRANCH: "main"
+          SOURCE_TAGS: "refs/tags/*"
+          DESTINATION_TAGS: "refs/tags/*"
+          USERNAME: ${{ secrets.BOT_USERNAME }}
+          TOKEN: ${{ secrets.SYNC_REPO_TOKEN }}
+          DEST_REPO: ${{ secrets.SYNC_DEST_REPO }}
+        run: |
+          echo ">>> Cloning source repo..."
+          git lfs install
+          git clone --quiet "https://${USERNAME}:${TOKEN}@github.com/${SOURCE_REPO}.git" ./tfhe-rs --origin source && cd ./tfhe-rs
+          git remote add destination "https://${USERNAME}:${TOKEN}@github.com/${DEST_REPO}.git"
+
+          echo ">>> Fetching all branches references down locally so subsequent commands can see them..."
+          git fetch --all --tags --update-head-ok --quiet
+
+          echo ">>> Sync LFS items from source..."
+          ./scripts/lfs_sync.sh source destination "${SOURCE_BRANCH}"
+
+          echo ">>> Pushing git changes for ${SOURCE_BRANCH}..."
+          git push destination "${SOURCE_BRANCH}:${DESTINATION_BRANCH}" -f
+
+          echo ">>> Pushing git tags..."
+          git push destination "${SOURCE_TAGS}:${DESTINATION_TAGS}" -f
+
+          shred --remove .git/config

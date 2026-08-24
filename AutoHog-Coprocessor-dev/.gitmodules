@@ -1,0 +1,9 @@
+[submodule "thirdparties/yosys"]
+	path = thirdparties/yosys
+	url = https://github.com/YosysHQ/yosys.git
+[submodule "thirdparties/blst"]
+	path = thirdparties/blst
+	url = https://github.com/supranational/blst.git
+[submodule "thirdparties/mcl"]
+	path = thirdparties/mcl
+	url = https://github.com/herumi/mcl.git

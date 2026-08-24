@@ -1,0 +1,91 @@
+[workspace]
+resolver = "3"
+members = [
+    "apps/test-vectors",
+    "backends/tfhe-cuda-backend",
+    "backends/tfhe-hpu-backend",
+    "backends/zk-cuda-backend",
+    "mockups/tfhe-hpu-mockup",
+    "tasks",
+    "tests",
+    "tfhe",
+    "tfhe-benchmark",
+    "tfhe-csprng",
+    "tfhe-fft",
+    "tfhe-ntt",
+    "tfhe-zk-pok",
+    "utils/benchmark_spec",
+    "utils/param_dedup",
+    "utils/tfhe-backward-compat-checker",
+    "utils/tfhe-backward-compat-data",
+    "utils/tfhe-backward-compat-data/crates/add_new_version",
+    "utils/tfhe-safe-serialize",
+    "utils/tfhe-versionable",
+    "utils/tfhe-versionable-derive",
+    "utils/wasm-par-mq",
+    "utils/wasm-par-mq/examples/msm",
+    "utils/wasm-par-mq/web_tests",
+]
+
+exclude = ["utils/tfhe-lints", "apps/trivium"]
+
+[workspace.package]
+rust-version = "1.91.1"
+
+[workspace.dependencies]
+aligned-vec = { version = "0.6", default-features = false }
+ark-ec = "0.5.0"
+ark-ff = "0.5.0"
+bytemuck = "1.24"
+dyn-stack = { version = "0.13", default-features = false }
+itertools = "0.14"
+num-complex = "0.4"
+pulp = { version = "0.22", default-features = false }
+rand = "0.8"
+rayon = "1.11"
+serde = { version = "1.0", default-features = false }
+wasm-bindgen = { version = "0.2.114" }
+wasm-bindgen-futures = { version = "0.4.56" }
+# js-sys (at this point in time) automatically enables the unsafe-eval feature which we do not want
+# this does not prevent other deps from enabling it, but it at least conveys our need to not have it
+# we still enable std, which was part of default before
+js-sys = { version = "0.3.91", default-features = false, features = ["std"] }
+getrandom = "0.2.17"
+bindgen = "0.71"
+# The project maintainers consider that this is the last version of the 1.3 branch, any newer version should not be trusted
+bincode = "=1.3.3"
+cmake = "0.1"
+pkg-config = "0.3"
+clap = { version = "4.5", features = ["derive"] }
+serde-wasm-bindgen = "0.6.5"
+paste = "1.0.15"
+
+[profile.bench]
+lto = "fat"
+
+[profile.release]
+lto = "fat"
+
+[profile.release_lto_off]
+inherits = "release"
+lto = "off"
+
+# Compiles much faster for tests and allows reasonable performance for iterating
+[profile.devo]
+inherits = "dev"
+opt-level = 3
+lto = "off"
+debug-assertions = false
+
+[workspace.metadata.dylint]
+libraries = [
+    { path = "utils/tfhe-lints/lints" },
+    { path = "utils/tfhe-lints/snapshot" },
+]
+
+[profile.debug_lto_off]
+inherits = "dev"
+debug = true
+lto = "off"
+debug-assertions = false
+overflow-checks = false
