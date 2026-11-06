@@ -246,16 +246,3 @@ OMP_NUM_THREADS=1 ./build/bin/relational_queries_test
 4--256 bits. A single comparison pass produces all five comparison predicates,
 so those five rows report a shared comparison latency.
 
-## Reproducibility notes
-
-- Use a Release build and record the compiler, CPU model, thread count, and
-  exact Git commit.
-- Run a warm-up before collecting measurements and use at least three measured
-  repetitions when the executable supports it.
-- Do not compare total process time with kernel-only timing. Read the timing
-  boundary printed by each executable.
-- Large packed-SIMD benchmarks can require substantial RAM and long key
-  generation or precomputation time.
-- Every benchmark that provides a correctness status should report success
-  before its timing is retained.
-
